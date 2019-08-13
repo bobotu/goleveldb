@@ -56,9 +56,9 @@ type dbIter struct {
 
 func (i *dbIter) fill(checkStart, checkLimit bool) bool {
 	if i.node != 0 {
-		n := i.p.nodeData[i.node]
-		m := n + i.p.nodeData[i.node+nKey]
-		i.key = i.p.kvData[n:m]
+		n := i.p.nodeData.Get(i.node)
+		m := n + i.p.nodeData.Get(i.node+nKey)
+		i.key = i.p.kvData.Slice(n, m)
 		if i.slice != nil {
 			switch {
 			case checkLimit && i.slice.Limit != nil && i.p.cmp.Compare(i.key, i.slice.Limit) >= 0:
@@ -68,7 +68,7 @@ func (i *dbIter) fill(checkStart, checkLimit bool) bool {
 				goto bail
 			}
 		}
-		i.value = i.p.kvData[m : m+i.p.nodeData[i.node+nVal]]
+		i.value = i.p.kvData.Slice(m, m+i.p.nodeData.Get(i.node+nVal))
 		return true
 	}
 bail:
@@ -93,7 +93,7 @@ func (i *dbIter) First() bool {
 	if i.slice != nil && i.slice.Start != nil {
 		i.node, _ = i.p.findGE(i.slice.Start, false)
 	} else {
-		i.node = i.p.nodeData[nNext]
+		i.node = i.p.nodeData.Get(nNext)
 	}
 	return i.fill(false, true)
 }
@@ -146,7 +146,7 @@ func (i *dbIter) Next() bool {
 	i.forward = true
 	i.p.mu.RLock()
 	defer i.p.mu.RUnlock()
-	i.node = i.p.nodeData[i.node+nNext]
+	i.node = i.p.nodeData.Get(i.node + nNext)
 	return i.fill(false, true)
 }
 
@@ -225,14 +225,14 @@ type DB struct {
 	rnd *bitRand
 
 	mu     sync.RWMutex
-	kvData []byte
+	kvData byteSlice
 	// Node data:
 	// [0]         : KV offset
 	// [1]         : Key length
 	// [2]         : Value length
 	// [3]         : Height
 	// [3..height] : Next nodes
-	nodeData  []int
+	nodeData  intSlice
 	prevNode  [tMaxHeight]int
 	maxHeight int
 	n         int
@@ -262,11 +262,11 @@ func (p *DB) findGE(key []byte, prev bool) (int, bool) {
 	node := 0
 	h := p.maxHeight - 1
 	for {
-		next := p.nodeData[node+nNext+h]
+		next := p.nodeData.Get(node + nNext + h)
 		cmp := 1
 		if next != 0 {
-			o := p.nodeData[next]
-			cmp = p.cmp.Compare(p.kvData[o:o+p.nodeData[next+nKey]], key)
+			o := p.nodeData.Get(next)
+			cmp = p.cmp.Compare(p.kvData.Slice(o, o+p.nodeData.Get(next+nKey)), key)
 		}
 		if cmp < 0 {
 			// Keep searching in this list
@@ -289,9 +289,9 @@ func (p *DB) findLT(key []byte) int {
 	node := 0
 	h := p.maxHeight - 1
 	for {
-		next := p.nodeData[node+nNext+h]
-		o := p.nodeData[next]
-		if next == 0 || p.cmp.Compare(p.kvData[o:o+p.nodeData[next+nKey]], key) >= 0 {
+		next := p.nodeData.Get(node + nNext + h)
+		o := p.nodeData.Get(next)
+		if next == 0 || p.cmp.Compare(p.kvData.Slice(o, o+p.nodeData.Get(next+nKey)), key) >= 0 {
 			if h == 0 {
 				break
 			}
@@ -307,7 +307,7 @@ func (p *DB) findLast() int {
 	node := 0
 	h := p.maxHeight - 1
 	for {
-		next := p.nodeData[node+nNext+h]
+		next := p.nodeData.Get(node + nNext + h)
 		if next == 0 {
 			if h == 0 {
 				break
@@ -329,12 +329,12 @@ func (p *DB) Put(key []byte, value []byte) error {
 	defer p.mu.Unlock()
 
 	if node, exact := p.findGE(key, true); exact {
-		kvOffset := len(p.kvData)
-		p.kvData = append(p.kvData, key...)
-		p.kvData = append(p.kvData, value...)
-		p.nodeData[node] = kvOffset
-		m := p.nodeData[node+nVal]
-		p.nodeData[node+nVal] = len(value)
+		kvOffset := p.kvData.Len()
+		p.kvData.Append(key)
+		p.kvData.Append(value)
+		p.nodeData.Set(node, kvOffset)
+		m := p.nodeData.Get(node + nVal)
+		p.nodeData.Set(node+nVal, len(value))
 		p.kvSize += len(value) - m
 		return nil
 	}
@@ -347,16 +347,16 @@ func (p *DB) Put(key []byte, value []byte) error {
 		p.maxHeight = h
 	}
 
-	kvOffset := len(p.kvData)
-	p.kvData = append(p.kvData, key...)
-	p.kvData = append(p.kvData, value...)
+	kvOffset := p.kvData.Len()
+	p.kvData.Append(key)
+	p.kvData.Append(value)
 	// Node
-	node := len(p.nodeData)
-	p.nodeData = append(p.nodeData, kvOffset, len(key), len(value), h)
+	node := p.nodeData.Len()
+	p.nodeData.Append([]int{kvOffset, len(key), len(value), h})
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i
-		p.nodeData = append(p.nodeData, p.nodeData[m])
-		p.nodeData[m] = node
+		p.nodeData.Append([]int{p.nodeData.Get(m)})
+		p.nodeData.Set(m, node)
 	}
 
 	p.kvSize += len(key) + len(value)
@@ -377,13 +377,13 @@ func (p *DB) Delete(key []byte) error {
 		return ErrNotFound
 	}
 
-	h := p.nodeData[node+nHeight]
+	h := p.nodeData.Get(node + nHeight)
 	for i, n := range p.prevNode[:h] {
 		m := n + 4 + i
-		p.nodeData[m] = p.nodeData[p.nodeData[m]+nNext+i]
+		p.nodeData.Set(m, p.nodeData.Get(p.nodeData.Get(m)+nNext+i))
 	}
 
-	p.kvSize -= p.nodeData[node+nKey] + p.nodeData[node+nVal]
+	p.kvSize -= p.nodeData.Get(node+nKey) + p.nodeData.Get(node+nVal)
 	p.n--
 	return nil
 }
@@ -406,8 +406,8 @@ func (p *DB) Contains(key []byte) bool {
 func (p *DB) Get(key []byte) (value []byte, err error) {
 	p.mu.RLock()
 	if node, exact := p.findGE(key, false); exact {
-		o := p.nodeData[node] + p.nodeData[node+nKey]
-		value = p.kvData[o : o+p.nodeData[node+nVal]]
+		o := p.nodeData.Get(node) + p.nodeData.Get(node+nKey)
+		value = p.kvData.Slice(o, o+p.nodeData.Get(node+nVal))
 	} else {
 		err = ErrNotFound
 	}
@@ -424,10 +424,10 @@ func (p *DB) Get(key []byte) (value []byte, err error) {
 func (p *DB) Find(key []byte) (rkey, value []byte, err error) {
 	p.mu.RLock()
 	if node, _ := p.findGE(key, false); node != 0 {
-		n := p.nodeData[node]
-		m := n + p.nodeData[node+nKey]
-		rkey = p.kvData[n:m]
-		value = p.kvData[m : m+p.nodeData[node+nVal]]
+		n := p.nodeData.Get(node)
+		m := n + p.nodeData.Get(node+nKey)
+		rkey = p.kvData.Slice(n, m)
+		value = p.kvData.Slice(m, m+p.nodeData.Get(node+nVal))
 	} else {
 		err = ErrNotFound
 	}
@@ -458,7 +458,7 @@ func (p *DB) NewIterator(slice *util.Range) iterator.Iterator {
 func (p *DB) Capacity() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return cap(p.kvData)
+	return p.kvData.lastChunk().startOffset + byteChunkSize
 }
 
 // Size returns sum of keys and values length. Note that deleted
@@ -474,7 +474,7 @@ func (p *DB) Size() int {
 func (p *DB) Free() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return cap(p.kvData) - len(p.kvData)
+	return p.kvData.lastChunk().remain()
 }
 
 // Len returns the number of entries in the DB.
@@ -490,14 +490,13 @@ func (p *DB) Reset() {
 	p.maxHeight = 1
 	p.n = 0
 	p.kvSize = 0
-	p.kvData = p.kvData[:0]
-	p.nodeData = p.nodeData[:nNext+tMaxHeight]
-	p.nodeData[nKV] = 0
-	p.nodeData[nKey] = 0
-	p.nodeData[nVal] = 0
-	p.nodeData[nHeight] = tMaxHeight
+	p.kvData.Truncate(0)
+	p.nodeData.Truncate(nNext + tMaxHeight)
+	p.nodeData.Set(nKV, 0)
+	p.nodeData.Set(nKey, 0)
+	p.nodeData.Set(nVal, 0)
+	p.nodeData.Set(nHeight, tMaxHeight)
 	for n := 0; n < tMaxHeight; n++ {
-		p.nodeData[nNext+n] = 0
 		p.prevNode[n] = 0
 	}
 	p.mu.Unlock()
@@ -516,9 +515,9 @@ func New(cmp comparer.BasicComparer, capacity int) *DB {
 		cmp:       cmp,
 		rnd:       &bitRand{src: rndSrc},
 		maxHeight: 1,
-		kvData:    make([]byte, 0, capacity),
-		nodeData:  make([]int, 4+tMaxHeight),
 	}
-	p.nodeData[nHeight] = tMaxHeight
+	initState := make([]int, 4+tMaxHeight)
+	initState[nHeight] = tMaxHeight
+	p.nodeData.Append(initState)
 	return p
 }
