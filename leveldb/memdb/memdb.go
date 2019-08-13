@@ -329,7 +329,7 @@ func (p *DB) Put(key []byte, value []byte) error {
 	defer p.mu.Unlock()
 
 	if node, exact := p.findGE(key, true); exact {
-		kvOffset := p.kvData.Len()
+		kvOffset := p.kvData.PreAppend(len(key) + len(value))
 		p.kvData.Append(key)
 		p.kvData.Append(value)
 		p.nodeData.Set(node, kvOffset)
@@ -347,11 +347,11 @@ func (p *DB) Put(key []byte, value []byte) error {
 		p.maxHeight = h
 	}
 
-	kvOffset := p.kvData.Len()
+	kvOffset := p.kvData.PreAppend(len(key) + len(value))
 	p.kvData.Append(key)
 	p.kvData.Append(value)
 	// Node
-	node := p.nodeData.Len()
+	node := p.nodeData.PreAppend(4 + h)
 	p.nodeData.Append([]int{kvOffset, len(key), len(value), h})
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i

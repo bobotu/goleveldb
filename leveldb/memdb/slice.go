@@ -1,41 +1,46 @@
 package memdb
 
-import "unsafe"
-
 const (
-	byteChunkSize = 2 * 1024 * 1024
-	intChunkSize  = byteChunkSize / unsafe.Sizeof(int(0))
+	byteOffShift  = 21
+	byteChunkSize = 1 << byteOffShift
+	intOffShift   = 18
+	intChunkSize  = 1 << intOffShift
 )
 
 type byteChunk struct {
 	startOffset int
-	used        int
+	endOffset   int
 	data        [byteChunkSize]byte
 }
 
 func (c *byteChunk) remain() int {
-	return len(c.data) - c.used
-}
-
-func (c *byteChunk) endOffset() int {
-	return c.startOffset + c.used
+	return len(c.data) - (c.endOffset - c.startOffset)
 }
 
 type byteSlice struct {
 	chunks []*byteChunk
 }
 
-func (s *byteSlice) Len() int {
+func (s *byteSlice) PreAppend(size int) int {
 	if len(s.chunks) == 0 {
 		return 0
 	}
 	lastChunk := s.lastChunk()
-	return lastChunk.startOffset + lastChunk.used
+	if lastChunk.remain() < size {
+		newChunk := new(byteChunk)
+		newChunk.startOffset = lastChunk.endOffset
+		newChunk.endOffset = newChunk.startOffset
+		s.chunks = append(s.chunks, newChunk)
+		lastChunk = newChunk
+	}
+	idx := len(s.chunks) - 1
+	off := lastChunk.endOffset - lastChunk.startOffset
+	return idx<<byteOffShift | off
 }
 
 func (s *byteSlice) Truncate(end int) {
 	c, idx := s.findChunk(end)
-	c.used = end - c.startOffset
+	c.endOffset = end
 	s.chunks = s.chunks[:idx+1]
 }
 
@@ -44,67 +49,59 @@ func (s *byteSlice) Append(data []byte) {
 		s.chunks = append(s.chunks, new(byteChunk))
 	}
 	lastChunk := s.lastChunk()
-	if lastChunk.remain() < len(data) {
-		newChunk := new(byteChunk)
-		newChunk.startOffset = lastChunk.startOffset + lastChunk.used
-		s.chunks = append(s.chunks, newChunk)
-		lastChunk = newChunk
-	}
-	copy(lastChunk.data[lastChunk.used:], data)
-	lastChunk.used += len(data)
+	copy(lastChunk.data[lastChunk.endOffset-lastChunk.startOffset:], data)
+	lastChunk.endOffset += len(data)
 }
 
 func (s *byteSlice) Slice(start, end int) []byte {
-	c, _ := s.findChunk(end - 1)
-	if start < c.startOffset {
-		panic("slice across chunk")
-	}
-	start -= c.startOffset
-	end -= c.startOffset
-	return c.data[start:end]
+	c, off := s.findChunk(start)
+	l := end - start
+	return c.data[off : off+l]
 }
 
 func (s *byteSlice) lastChunk() *byteChunk {
 	return s.chunks[len(s.chunks)-1]
 }
 
-func (s *byteSlice) findChunk(end int) (*byteChunk, int) {
-	idx := end / byteChunkSize
-	for s.chunks[idx].endOffset() < end {
-		idx++
-	}
-	return s.chunks[idx], idx
+func (s *byteSlice) findChunk(start int) (*byteChunk, int) {
+	idx := start >> byteOffShift
+	return s.chunks[idx], start & (1<<byteOffShift - 1)
 }
 
 type intChunk struct {
 	startOffset int
-	used        int
+	endOffset   int
 	data        [intChunkSize]int
 }
 
 func (c *intChunk) remain() int {
-	return len(c.data) - c.used
-}
-
-func (c *intChunk) endOffset() int {
-	return c.startOffset + c.used - 1
+	return len(c.data) - (c.endOffset - c.startOffset)
 }
 
 type intSlice struct {
 	chunks []*intChunk
 }
 
-func (s *intSlice) Len() int {
+func (s *intSlice) PreAppend(size int) int {
 	if len(s.chunks) == 0 {
 		return 0
 	}
 	lastChunk := s.lastChunk()
-	return lastChunk.startOffset + lastChunk.used
+	if lastChunk.remain() < size {
+		newChunk := new(intChunk)
+		newChunk.startOffset = lastChunk.endOffset
+		newChunk.endOffset = newChunk.startOffset
+		s.chunks = append(s.chunks, newChunk)
+		lastChunk = newChunk
+	}
+	idx := len(s.chunks) - 1
+	off := lastChunk.endOffset - lastChunk.startOffset
+	return idx<<intOffShift | off
 }
 
 func (s *intSlice) Truncate(end int) {
 	c, idx := s.findChunk(end)
-	c.used = end - c.startOffset
+	c.endOffset = end
 	s.chunks = s.chunks[:idx+1]
 }
 
@@ -113,34 +110,25 @@ func (s *intSlice) Append(data []int) {
 		s.chunks = append(s.chunks, new(intChunk))
 	}
 	lastChunk := s.lastChunk()
-	if lastChunk.remain() < len(data) {
-		newChunk := new(intChunk)
-		newChunk.startOffset = lastChunk.startOffset + lastChunk.used
-		s.chunks = append(s.chunks, newChunk)
-		lastChunk = newChunk
-	}
-	copy(lastChunk.data[lastChunk.used:], data)
-	lastChunk.used += len(data)
+	copy(lastChunk.data[lastChunk.endOffset-lastChunk.startOffset:], data)
+	lastChunk.endOffset += len(data)
 }
 
 func (s *intSlice) Get(idx int) int {
-	c, _ := s.findChunk(idx)
-	return c.data[idx-c.startOffset]
+	c, off := s.findChunk(idx)
+	return c.data[off]
 }
 
 func (s *intSlice) Set(idx int, value int) {
-	c, _ := s.findChunk(idx)
-	c.data[idx-c.startOffset] = value
+	c, off := s.findChunk(idx)
+	c.data[off] = value
 }
 
 func (s *intSlice) lastChunk() *intChunk {
 	return s.chunks[len(s.chunks)-1]
 }
 
-func (s *intSlice) findChunk(end int) (*intChunk, int) {
-	idx := end / byteChunkSize
-	for s.chunks[idx].endOffset() < end {
-		idx++
-	}
-	return s.chunks[idx], idx
+func (s *intSlice) findChunk(start int) (*intChunk, int) {
+	idx := start >> intOffShift
+	return s.chunks[idx], start & (1<<intOffShift - 1)
 }
