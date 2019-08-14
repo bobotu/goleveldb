@@ -1,134 +1,106 @@
 package memdb
 
+import "math/bits"
+
 const (
-	byteOffShift  = 21
-	byteChunkSize = 1 << byteOffShift
-	intOffShift   = 18
-	intChunkSize  = 1 << intOffShift
+	byteOffsetShift  = 21
+	byteMaxChunkSize = 1 << byteOffsetShift
 )
 
-type byteChunk struct {
-	startOffset int
-	endOffset   int
-	data        [byteChunkSize]byte
-}
-
-func (c *byteChunk) remain() int {
-	return len(c.data) - (c.endOffset - c.startOffset)
-}
-
 type byteSlice struct {
-	chunks []*byteChunk
+	chunks []byte
 }
 
-func (s *byteSlice) PreAppend(size int) int {
-	if len(s.chunks) == 0 {
-		return 0
-	}
-	lastChunk := s.lastChunk()
-	if lastChunk.remain() < size {
-		newChunk := new(byteChunk)
-		newChunk.startOffset = lastChunk.endOffset
-		newChunk.endOffset = newChunk.startOffset
-		s.chunks = append(s.chunks, newChunk)
-		lastChunk = newChunk
-	}
-	idx := len(s.chunks) - 1
-	off := lastChunk.endOffset - lastChunk.startOffset
-	return idx<<byteOffShift | off
+func newByteSlice(initCap int) byteSlice {
+	//initCap = round(initCap)
+	return byteSlice{chunks: make([]byte, 0, initCap)}
+}
+
+func (s *byteSlice) Allocate(size int) int {
+	return len(s.chunks)
 }
 
 func (s *byteSlice) Truncate(end int) {
-	c, idx := s.findChunk(end)
-	c.endOffset = end
-	s.chunks = s.chunks[:idx+1]
+	s.chunks = s.chunks[:end]
 }
 
 func (s *byteSlice) Append(data []byte) {
-	if len(s.chunks) == 0 {
-		s.chunks = append(s.chunks, new(byteChunk))
-	}
-	lastChunk := s.lastChunk()
-	copy(lastChunk.data[lastChunk.endOffset-lastChunk.startOffset:], data)
-	lastChunk.endOffset += len(data)
+	s.chunks = append(s.chunks, data...)
 }
 
 func (s *byteSlice) Slice(start, end int) []byte {
-	c, off := s.findChunk(start)
-	l := end - start
-	return c.data[off : off+l]
+	return s.chunks[start:end]
 }
 
-func (s *byteSlice) lastChunk() *byteChunk {
-	return s.chunks[len(s.chunks)-1]
+func (s *byteSlice) decodeIdx(idx int) (int, int) {
+	return idx >> byteOffsetShift, idx & (1<<byteOffsetShift - 1)
 }
 
-func (s *byteSlice) findChunk(start int) (*byteChunk, int) {
-	idx := start >> byteOffShift
-	return s.chunks[idx], start & (1<<byteOffShift - 1)
+type nodeData struct {
+	chunkSize int
+	offShift  uint
+	chunks    [][]int
 }
 
-type intChunk struct {
-	startOffset int
-	endOffset   int
-	data        [intChunkSize]int
-}
-
-func (c *intChunk) remain() int {
-	return len(c.data) - (c.endOffset - c.startOffset)
-}
-
-type intSlice struct {
-	chunks []*intChunk
-}
-
-func (s *intSlice) PreAppend(size int) int {
-	if len(s.chunks) == 0 {
-		return 0
+func newNodeData(chunkSize int) nodeData {
+	chunkSize = round(chunkSize)
+	return nodeData{
+		chunkSize: chunkSize,
+		offShift:  uint(bits.TrailingZeros64(uint64(chunkSize))),
+		chunks:    [][]int{make([]int, 0, chunkSize)},
 	}
-	lastChunk := s.lastChunk()
-	if lastChunk.remain() < size {
-		newChunk := new(intChunk)
-		newChunk.startOffset = lastChunk.endOffset
-		newChunk.endOffset = newChunk.startOffset
-		s.chunks = append(s.chunks, newChunk)
-		lastChunk = newChunk
+}
+
+func (d *nodeData) CurrentPosition() int {
+	idx := len(d.chunks) - 1
+	off := len(d.chunks[idx])
+	return idx<<d.offShift + off
+}
+
+func (d *nodeData) Truncate(end int) {
+	c, off := d.decodeIdx(end)
+	d.chunks[c] = d.chunks[c][:off]
+	d.chunks = d.chunks[:c+1]
+}
+
+func (d *nodeData) Append(data []int) {
+	for {
+		chunk := d.chunks[len(d.chunks)-1]
+		remain := cap(chunk) - len(chunk)
+		cursor := len(data)
+		if remain < len(data) {
+			cursor = remain
+		}
+		d.chunks[len(d.chunks)-1] = append(d.chunks[len(d.chunks)-1], data[:cursor]...)
+		data = data[cursor:]
+		if len(data) == 0 {
+			break
+		}
+		d.chunks = append(d.chunks, make([]int, 0, d.chunkSize))
 	}
-	idx := len(s.chunks) - 1
-	off := lastChunk.endOffset - lastChunk.startOffset
-	return idx<<intOffShift | off
 }
 
-func (s *intSlice) Truncate(end int) {
-	c, idx := s.findChunk(end)
-	c.endOffset = end
-	s.chunks = s.chunks[:idx+1]
+func (d *nodeData) Get(idx int) int {
+	c, off := d.decodeIdx(idx)
+	return d.chunks[c][off]
 }
 
-func (s *intSlice) Append(data []int) {
-	if len(s.chunks) == 0 {
-		s.chunks = append(s.chunks, new(intChunk))
-	}
-	lastChunk := s.lastChunk()
-	copy(lastChunk.data[lastChunk.endOffset-lastChunk.startOffset:], data)
-	lastChunk.endOffset += len(data)
+func (d *nodeData) Set(idx int, value int) {
+	c, off := d.decodeIdx(idx)
+	d.chunks[c][off] = value
 }
 
-func (s *intSlice) Get(idx int) int {
-	c, off := s.findChunk(idx)
-	return c.data[off]
+func (d *nodeData) decodeIdx(idx int) (int, int) {
+	return idx >> d.offShift, idx & (1<<d.offShift - 1)
 }
 
-func (s *intSlice) Set(idx int, value int) {
-	c, off := s.findChunk(idx)
-	c.data[off] = value
-}
-
-func (s *intSlice) lastChunk() *intChunk {
-	return s.chunks[len(s.chunks)-1]
-}
-
-func (s *intSlice) findChunk(start int) (*intChunk, int) {
-	idx := start >> intOffShift
-	return s.chunks[idx], start & (1<<intOffShift - 1)
+// Round up to the next highest power of 2
+func round(a int) int {
+	a--
+	a |= a >> 1
+	a |= a >> 2
+	a |= a >> 4
+	a |= a >> 8
+	a |= a >> 16
+	return a + 1
 }

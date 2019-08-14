@@ -232,7 +232,7 @@ type DB struct {
 	// [2]         : Value length
 	// [3]         : Height
 	// [3..height] : Next nodes
-	nodeData  intSlice
+	nodeData  nodeData
 	prevNode  [tMaxHeight]int
 	maxHeight int
 	n         int
@@ -329,7 +329,7 @@ func (p *DB) Put(key []byte, value []byte) error {
 	defer p.mu.Unlock()
 
 	if node, exact := p.findGE(key, true); exact {
-		kvOffset := p.kvData.PreAppend(len(key) + len(value))
+		kvOffset := p.kvData.Allocate(len(key) + len(value))
 		p.kvData.Append(key)
 		p.kvData.Append(value)
 		p.nodeData.Set(node, kvOffset)
@@ -347,11 +347,11 @@ func (p *DB) Put(key []byte, value []byte) error {
 		p.maxHeight = h
 	}
 
-	kvOffset := p.kvData.PreAppend(len(key) + len(value))
+	kvOffset := p.kvData.Allocate(len(key) + len(value))
 	p.kvData.Append(key)
 	p.kvData.Append(value)
 	// Node
-	node := p.nodeData.PreAppend(4 + h)
+	node := p.nodeData.CurrentPosition()
 	p.nodeData.Append([]int{kvOffset, len(key), len(value), h})
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i
@@ -458,7 +458,9 @@ func (p *DB) NewIterator(slice *util.Range) iterator.Iterator {
 func (p *DB) Capacity() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.kvData.lastChunk().startOffset + byteChunkSize
+	last := p.kvData.chunks
+	// TODO:
+	return cap(last)
 }
 
 // Size returns sum of keys and values length. Note that deleted
@@ -474,7 +476,8 @@ func (p *DB) Size() int {
 func (p *DB) Free() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.kvData.lastChunk().remain()
+	last := p.kvData.chunks
+	return cap(last) - len(last)
 }
 
 // Len returns the number of entries in the DB.
@@ -514,6 +517,8 @@ func New(cmp comparer.BasicComparer, capacity int) *DB {
 	p := &DB{
 		cmp:       cmp,
 		rnd:       &bitRand{src: rndSrc},
+		kvData:    newByteSlice(capacity),
+		nodeData:  newNodeData(1 * 1024 * 1024),
 		maxHeight: 1,
 	}
 	initState := make([]int, 4+tMaxHeight)
