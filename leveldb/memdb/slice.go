@@ -42,18 +42,24 @@ type nodeData struct {
 	chunks    [][]int
 }
 
-func newNodeData(chunkSize int) nodeData {
+func newNodeData(initSize, chunkSize int) nodeData {
 	chunkSize = round(chunkSize)
 	return nodeData{
 		chunkSize: chunkSize,
 		offShift:  uint(bits.TrailingZeros64(uint64(chunkSize))),
-		chunks:    [][]int{make([]int, 0, chunkSize)},
+		chunks:    [][]int{make([]int, initSize, chunkSize)},
 	}
 }
 
-func (d *nodeData) CurrentPosition() int {
+func (d *nodeData) Allocate(size int) int {
 	idx := len(d.chunks) - 1
 	off := len(d.chunks[idx])
+	remain := cap(d.chunks[idx]) - off
+	if size > remain {
+		d.chunks = append(d.chunks, make([]int, size-remain, d.chunkSize))
+		size = remain
+	}
+	d.chunks[idx] = d.chunks[idx][:off+size]
 	return idx<<d.offShift + off
 }
 
@@ -61,23 +67,6 @@ func (d *nodeData) Truncate(end int) {
 	c, off := d.decodeIdx(end)
 	d.chunks[c] = d.chunks[c][:off]
 	d.chunks = d.chunks[:c+1]
-}
-
-func (d *nodeData) Append(data []int) {
-	for {
-		chunk := d.chunks[len(d.chunks)-1]
-		remain := cap(chunk) - len(chunk)
-		cursor := len(data)
-		if remain < len(data) {
-			cursor = remain
-		}
-		d.chunks[len(d.chunks)-1] = append(d.chunks[len(d.chunks)-1], data[:cursor]...)
-		data = data[cursor:]
-		if len(data) == 0 {
-			break
-		}
-		d.chunks = append(d.chunks, make([]int, 0, d.chunkSize))
-	}
 }
 
 func (d *nodeData) Get(idx int) int {

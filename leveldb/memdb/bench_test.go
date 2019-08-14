@@ -15,6 +15,18 @@ import (
 	"github.com/pingcap/goleveldb/leveldb/comparer"
 )
 
+func BenchmarkLargeIndex(b *testing.B) {
+	buf := make([][4]byte, 10000000)
+	for i := range buf {
+		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
+	}
+	b.ResetTimer()
+	p := New(comparer.DefaultComparer, 0)
+	for i := range buf {
+		p.Put(buf[i][:], nil)
+	}
+}
+
 func BenchmarkPut(b *testing.B) {
 	buf := make([][4]byte, b.N)
 	for i := range buf {

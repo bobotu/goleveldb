@@ -351,11 +351,14 @@ func (p *DB) Put(key []byte, value []byte) error {
 	p.kvData.Append(key)
 	p.kvData.Append(value)
 	// Node
-	node := p.nodeData.CurrentPosition()
-	p.nodeData.Append([]int{kvOffset, len(key), len(value), h})
+	node := p.nodeData.Allocate(4 + h)
+	p.nodeData.Set(node, kvOffset)
+	p.nodeData.Set(node+1, len(key))
+	p.nodeData.Set(node+2, len(value))
+	p.nodeData.Set(node+3, h)
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i
-		p.nodeData.Append([]int{p.nodeData.Get(m)})
+		p.nodeData.Set(node+4+i, p.nodeData.Get(m))
 		p.nodeData.Set(m, node)
 	}
 
@@ -518,11 +521,9 @@ func New(cmp comparer.BasicComparer, capacity int) *DB {
 		cmp:       cmp,
 		rnd:       &bitRand{src: rndSrc},
 		kvData:    newByteSlice(capacity),
-		nodeData:  newNodeData(1 * 1024 * 1024),
+		nodeData:  newNodeData(4+tMaxHeight, 1024),
 		maxHeight: 1,
 	}
-	initState := make([]int, 4+tMaxHeight)
-	initState[nHeight] = tMaxHeight
-	p.nodeData.Append(initState)
+	p.nodeData.Set(nHeight, tMaxHeight)
 	return p
 }
