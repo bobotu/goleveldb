@@ -37,18 +37,21 @@ func (s *byteSlice) decodeIdx(idx int) (int, int) {
 }
 
 type nodeData struct {
-	chunkSize int
-	offShift  uint
-	chunks    [][]int
+	chunkSize   int
+	offShift    uint
+	chunksSmall [10][]int
+	chunks      [][]int
 }
 
 func newNodeData(initSize, chunkSize int) nodeData {
 	chunkSize = round(chunkSize)
-	return nodeData{
+	d := nodeData{
 		chunkSize: chunkSize,
 		offShift:  uint(bits.TrailingZeros64(uint64(chunkSize))),
-		chunks:    [][]int{make([]int, initSize, chunkSize)},
 	}
+	d.chunksSmall[0] = make([]int, initSize, chunkSize)
+	d.chunks = d.chunksSmall[:1]
+	return d
 }
 
 func (d *nodeData) Allocate(size int) int {
@@ -71,7 +74,8 @@ func (d *nodeData) Truncate(end int) {
 
 func (d *nodeData) Get(idx int) int {
 	c, off := d.decodeIdx(idx)
-	return d.chunks[c][off]
+	chunk := d.chunks[c]
+	return chunk[off]
 }
 
 func (d *nodeData) Set(idx int, value int) {

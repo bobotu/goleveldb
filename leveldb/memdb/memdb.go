@@ -521,7 +521,7 @@ func New(cmp comparer.BasicComparer, capacity int) *DB {
 		cmp:       cmp,
 		rnd:       &bitRand{src: rndSrc},
 		kvData:    newByteSlice(capacity),
-		nodeData:  newNodeData(4+tMaxHeight, 1024),
+		nodeData:  newNodeData(4+tMaxHeight, 400 * 1024 * 1024),
 		maxHeight: 1,
 	}
 	p.nodeData.Set(nHeight, tMaxHeight)
