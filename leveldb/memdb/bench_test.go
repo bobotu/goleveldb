@@ -15,8 +15,26 @@ import (
 	"github.com/pingcap/goleveldb/leveldb/comparer"
 )
 
+const (
+	keySize = 16
+	valueSize = 128
+)
+
+func BenchmarkLargeIndex(b *testing.B) {
+	buf := make([][valueSize]byte, 10000000)
+	for i := range buf {
+		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
+	}
+	p := New(comparer.DefaultComparer, 0)
+	b.ResetTimer()
+
+	for i := range buf {
+		p.Put(buf[i][:keySize], buf[i][:])
+	}
+}
+
 func BenchmarkPut(b *testing.B) {
-	buf := make([][4]byte, b.N)
+	buf := make([][valueSize]byte, b.N)
 	for i := range buf {
 		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
 	}
@@ -24,11 +42,12 @@ func BenchmarkPut(b *testing.B) {
 	b.ResetTimer()
 	p := New(comparer.DefaultComparer, 0)
 	for i := range buf {
-		p.Put(buf[i][:], nil)
+		p.Put(buf[i][:keySize], buf[i][:])
 	}
 }
 
 func BenchmarkConcurrentPut(b *testing.B) {
+	b.Skip()
 	buf := make([][4]byte, b.N)
 	for i := range buf {
 		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
@@ -51,27 +70,27 @@ func BenchmarkConcurrentPut(b *testing.B) {
 }
 
 func BenchmarkPutRandom(b *testing.B) {
-	buf := make([][4]byte, b.N)
+	buf := make([][valueSize]byte, b.N)
 	for i := range buf {
 		binary.LittleEndian.PutUint32(buf[i][:], uint32(rand.Int()))
 	}
 
-	b.ResetTimer()
 	p := New(comparer.DefaultComparer, 0)
+	b.ResetTimer()
 	for i := range buf {
-		p.Put(buf[i][:], nil)
+		p.Put(buf[i][:keySize], buf[i][:])
 	}
 }
 
 func BenchmarkGet(b *testing.B) {
-	buf := make([][4]byte, b.N)
+	buf := make([][valueSize]byte, b.N)
 	for i := range buf {
 		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
 	}
 
 	p := New(comparer.DefaultComparer, 0)
 	for i := range buf {
-		p.Put(buf[i][:], nil)
+		p.Put(buf[i][:keySize], buf[i][:])
 	}
 
 	b.ResetTimer()
@@ -81,14 +100,14 @@ func BenchmarkGet(b *testing.B) {
 }
 
 func BenchmarkGetRandom(b *testing.B) {
-	buf := make([][4]byte, b.N)
+	buf := make([][valueSize]byte, b.N)
 	for i := range buf {
 		binary.LittleEndian.PutUint32(buf[i][:], uint32(i))
 	}
 
 	p := New(comparer.DefaultComparer, 0)
 	for i := range buf {
-		p.Put(buf[i][:], nil)
+		p.Put(buf[i][:keySize], buf[i][:])
 	}
 
 	b.ResetTimer()
